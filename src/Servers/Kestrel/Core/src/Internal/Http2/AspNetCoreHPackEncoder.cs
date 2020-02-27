@@ -4,7 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http.HPack;
-using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http;
 using Microsoft.Extensions.Primitives;
 
 namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
@@ -20,7 +20,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             _enumerator = enumerator;
             _enumerator.MoveNext();
 
-            return Encode1(buffer, out length);
+            return Encode(buffer, out length);
         }
 
         public bool BeginEncode(int statusCode, HeaderEnumerator enumerator, Span<byte> buffer, out int length)
@@ -29,18 +29,18 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
             _enumerator.MoveNext();
 
             int statusCodeLength = _hPackEncoder.EncodeStatusCode(statusCode, buffer);
-            bool done = Encode1(buffer.Slice(statusCodeLength), throwIfNoneEncoded: false, out int headersLength);
+            bool done = Encode(buffer.Slice(statusCodeLength), throwIfNoneEncoded: false, out int headersLength);
             length = statusCodeLength + headersLength;
 
             return done;
         }
 
-        public bool Encode1(Span<byte> buffer, out int length)
+        public bool Encode(Span<byte> buffer, out int length)
         {
-            return Encode1(buffer, throwIfNoneEncoded: true, out length);
+            return Encode(buffer, throwIfNoneEncoded: true, out length);
         }
 
-        private bool Encode1(Span<byte> buffer, bool throwIfNoneEncoded, out int length)
+        private bool Encode(Span<byte> buffer, bool throwIfNoneEncoded, out int length)
         {
             int currentLength = 0;
             do
@@ -68,22 +68,26 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
 
     internal struct HeaderEnumerator
     {
-        private HeaderDictionary.Enumerator _headersDictionaryEnumator;
-        private IEnumerator<KeyValuePair<string, StringValues>> _genericEnumerator;
+        private bool _isTrailers;
+        private HttpResponseHeaders.Enumerator _headersEnumerator;
+        private HttpResponseTrailers.Enumerator _trailersEnumerator;
         private StringValues.Enumerator _stringValuesEnumerator;
 
-        public HeaderEnumerator(IHeaderDictionary headers)
+        public HeaderEnumerator(HttpResponseHeaders headers)
         {
-            if (headers is HeaderDictionary headerDictionary)
-            {
-                _headersDictionaryEnumator = headerDictionary.GetEnumerator();
-                _genericEnumerator = null;
-            }
-            else
-            {
-                _headersDictionaryEnumator = default;
-                _genericEnumerator = headers.GetEnumerator();
-            }
+            _headersEnumerator = headers.GetEnumerator();
+            _trailersEnumerator = default;
+            _isTrailers = false;
+
+            _stringValuesEnumerator = default;
+            Current = default;
+        }
+
+        public HeaderEnumerator(HttpResponseTrailers trailers)
+        {
+            _headersEnumerator = default;
+            _trailersEnumerator = trailers.GetEnumerator();
+            _isTrailers = true;
 
             _stringValuesEnumerator = default;
             Current = default;
@@ -91,9 +95,7 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
 
         private string GetCurrentKey()
         {
-            return (_genericEnumerator != null)
-                ? _genericEnumerator.Current.Key
-                : _headersDictionaryEnumator.Current.Key;
+            return _isTrailers ? _trailersEnumerator.Current.Key : _headersEnumerator.Current.Key;
         }
 
         public bool MoveNext()
@@ -129,29 +131,29 @@ namespace Microsoft.AspNetCore.Server.Kestrel.Core.Internal.Http2
 
         private bool TryGetNextStringEnumerator(out StringValues.Enumerator enumerator)
         {
-            if (_genericEnumerator != null)
+            if (_isTrailers)
             {
-                if (!_genericEnumerator.MoveNext())
+                if (!_trailersEnumerator.MoveNext())
                 {
                     enumerator = default;
                     return false;
                 }
                 else
                 {
-                    enumerator = _genericEnumerator.Current.Value.GetEnumerator();
+                    enumerator = _trailersEnumerator.Current.Value.GetEnumerator();
                     return true;
                 }
             }
             else
             {
-                if (!_headersDictionaryEnumator.MoveNext())
+                if (!_headersEnumerator.MoveNext())
                 {
                     enumerator = default;
                     return false;
                 }
                 else
                 {
-                    enumerator = _headersDictionaryEnumator.Current.Value.GetEnumerator();
+                    enumerator = _headersEnumerator.Current.Value.GetEnumerator();
                     return true;
                 }
             }
